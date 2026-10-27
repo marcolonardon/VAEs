@@ -1,0 +1,8 @@
+build/
+build-cmake/
+node_modules/
+qa/
+resultados/
+__pycache__/
+*.obj
+*.pdb
