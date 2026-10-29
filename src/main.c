@@ -195,6 +195,29 @@ static void folha_resultado(Planilha *f, const Ativacoes *a, double limiar) {
     binarizar(a->O4, limiar, f->pixels);
 }
 
+/* Acrescenta a aba uma matriz de antes das operacoes, para comparacao. */
+static void anexar_original(Planilha *f, const char *rotulo, const double *x) {
+    int p, b = f->n_originais++;
+    snprintf(f->rotulo_original[b], sizeof(f->rotulo_original[b]), "%s", rotulo);
+    for (p = 0; p < PIXELS; ++p) {
+        f->originais[b][p] = (int)x[p];
+    }
+}
+
+/* Mostra no terminal os originais e o resultado da aba, lado a lado. */
+static void imprimir_folha(const Planilha *f) {
+    int grades[MAX_ORIGINAIS + 1][PIXELS];
+    int b;
+    printf("\n%s\n", f->titulo);
+    for (b = 0; b < f->n_originais; ++b) {
+        printf("%s | ", f->rotulo_original[b]);
+        memcpy(grades[b], f->originais[b], sizeof(grades[b]));
+    }
+    printf("Resultado\n");
+    memcpy(grades[f->n_originais], f->pixels, sizeof(grades[0]));
+    imprimir_grades((const int (*)[PIXELS])grades, f->n_originais + 1);
+}
+
 static void descrever_modelo(Planilha *f, const Opcoes *o, const Treino *t) {
     snprintf(f->parametros, sizeof(f->parametros),
              "Limiar=%.3g; beta=%.3g; epocas=%d; taxa=%.3g; semente do treino=%u.",
@@ -245,30 +268,26 @@ static int cmd_reconstruir(const Opcoes *o, const Pesos *w, const Treino *t) {
         return 1;
     }
     for (k = 0; k < d.n; ++k) {
-        int grades[2][PIXELS], erros = 0;
+        /* Alem das primeiras MAX_FOLHAS abas, so mostra no terminal. */
+        Planilha extra, *f = k < quantidade ? &folhas[k] : &extra;
         Ativacoes a;
+        int erros = 0;
+        memset(f, 0, sizeof(*f));
         vae_frente(w, d.exemplos[k].x, zero, &a);
+        folha_resultado(f, &a, o->limiar);
+        anexar_original(f, "Original", d.exemplos[k].x);
         for (p = 0; p < PIXELS; ++p) {
-            grades[0][p] = (int)d.exemplos[k].x[p];
-        }
-        binarizar(a.O4, o->limiar, grades[1]);
-        for (p = 0; p < PIXELS; ++p) {
-            erros += grades[0][p] != grades[1][p];
+            erros += f->originais[0][p] != f->pixels[p];
         }
         total += erros;
-        printf("\nExemplo %d (digito %d): %d celula(s) diferente(s)\noriginal reconstrucao\n",
-               k + 1, d.exemplos[k].rotulo, erros);
-        imprimir_grades((const int (*)[PIXELS])grades, 2);
-        if (k < quantidade) {
-            Planilha *f = &folhas[k];
-            snprintf(f->nome, sizeof(f->nome), "Exemplo_%03d", k + 1);
-            snprintf(f->titulo, sizeof(f->titulo), "Reconstrucao do digito %d", d.exemplos[k].rotulo);
-            snprintf(f->descricao, sizeof(f->descricao),
-                     "Exemplo %d passado pelo VAE com z = mu; %d celula(s) diferente(s) do original.",
-                     k + 1, erros);
-            descrever_modelo(f, o, t);
-            folha_resultado(f, &a, o->limiar);
-        }
+        snprintf(f->nome, sizeof(f->nome), "Exemplo_%03d", k + 1);
+        snprintf(f->titulo, sizeof(f->titulo), "Reconstrucao do digito %d", d.exemplos[k].rotulo);
+        snprintf(f->descricao, sizeof(f->descricao),
+                 "Exemplo %d passado pelo VAE com z = mu; %d celula(s) diferente(s) do original.",
+                 k + 1, erros);
+        descrever_modelo(f, o, t);
+        imprimir_folha(f);
+        printf("%d celula(s) diferente(s)\n", erros);
     }
     printf("\nTotal: %d de %d celulas diferentes.\n", total, d.n * PIXELS);
     if (o->saida && d.n > MAX_FOLHAS) {
@@ -278,6 +297,32 @@ static int cmd_reconstruir(const Opcoes *o, const Pesos *w, const Treino *t) {
     free(folhas);
     dados_liberar(&d);
     return ok ? 0 : 1;
+}
+
+/* Indice do primeiro exemplo do digito (mu_do_digito ja garantiu que existe). */
+static int primeiro_exemplo(const Dados *d, int digito) {
+    int k = 0;
+    while (k < d->n - 1 && d->exemplos[k].rotulo != digito) {
+        ++k;
+    }
+    return k;
+}
+
+/* Exemplo de treino com menos celulas diferentes do desenho dado. */
+static int mais_parecido(const Dados *d, const int *pixels, int *diferencas) {
+    int k, p, melhor = 0;
+    *diferencas = PIXELS + 1;
+    for (k = 0; k < d->n; ++k) {
+        int n = 0;
+        for (p = 0; p < PIXELS; ++p) {
+            n += (int)d->exemplos[k].x[p] != pixels[p];
+        }
+        if (n < *diferencas) {
+            *diferencas = n;
+            melhor = k;
+        }
+    }
+    return melhor;
 }
 
 /* mu medio de todos os exemplos com esse rotulo. */
@@ -305,14 +350,25 @@ static int cmd_misturar(const Opcoes *o, const Pesos *w, const Treino *t) {
     int quantidade = o->tem_alpha ? 1 : o->passos;
     Planilha *folhas;
     Aleatorio rng;
+    char rotulo_a[48], rotulo_b[48];
+    const double *x_a, *x_b;
     int s, l, ok;
 
     if (!dados_ler(o->dados, &d)) return 1;
-    ok = mu_do_digito(w, &d, o->a, mu_a) && mu_do_digito(w, &d, o->b, mu_b);
-    dados_liberar(&d);
-    if (!ok) return 1;
+    if (!mu_do_digito(w, &d, o->a, mu_a) || !mu_do_digito(w, &d, o->b, mu_b)) {
+        dados_liberar(&d);
+        return 1;
+    }
     folhas = (Planilha *)calloc((size_t)quantidade, sizeof(Planilha));
-    if (!folhas) return 1;
+    if (!folhas) {
+        dados_liberar(&d);
+        return 1;
+    }
+    /* Para comparacao, o primeiro exemplo de cada digito. */
+    x_a = d.exemplos[primeiro_exemplo(&d, o->a)].x;
+    x_b = d.exemplos[primeiro_exemplo(&d, o->b)].x;
+    snprintf(rotulo_a, sizeof(rotulo_a), "Original %d (A)", o->a);
+    snprintf(rotulo_b, sizeof(rotulo_b), "Original %d (B)", o->b);
     rng.estado = o->treino.semente;
 
     for (s = 0; s < quantidade; ++s) {
@@ -331,23 +387,34 @@ static int cmd_misturar(const Opcoes *o, const Pesos *w, const Treino *t) {
                  (1 - alpha) * 100, o->a, alpha * 100, o->b, o->ruido);
         descrever_modelo(f, o, t);
         folha_resultado(f, &a, o->limiar);
-        printf("\n%s\n", f->titulo);
-        imprimir_grades((const int (*)[PIXELS])f->pixels, 1);
+        anexar_original(f, rotulo_a, x_a);
+        anexar_original(f, rotulo_b, x_b);
+        imprimir_folha(f);
     }
     ok = gravar(o->saida, folhas, quantidade);
     free(folhas);
+    dados_liberar(&d);
     return ok ? 0 : 1;
 }
 
 static int cmd_gerar(const Opcoes *o, const Pesos *w, const Treino *t) {
-    Planilha *folhas = (Planilha *)calloc((size_t)o->n, sizeof(Planilha));
+    Dados d;
+    Planilha *folhas;
     Aleatorio rng;
     int s, l, ok;
-    if (!folhas) return 1;
+    /* Os dados servem so para mostrar o exemplo de treino mais parecido. */
+    if (!dados_ler(o->dados, &d)) return 1;
+    folhas = (Planilha *)calloc((size_t)o->n, sizeof(Planilha));
+    if (!folhas) {
+        dados_liberar(&d);
+        return 1;
+    }
     rng.estado = o->treino.semente;
     for (s = 0; s < o->n; ++s) {
         Planilha *f = &folhas[s];
         Ativacoes a;
+        char rotulo[48];
+        int k, diferencas;
         /* Um VAE treinado aprende a decodificar amostras da priori N(0, I). */
         for (l = 0; l < N_LATENTE; ++l) {
             a.z[l] = normal(&rng);
@@ -359,11 +426,15 @@ static int cmd_gerar(const Opcoes *o, const Pesos *w, const Treino *t) {
                  "z sorteado de N(0, I) com semente %u e decodificado.", (unsigned)o->treino.semente);
         descrever_modelo(f, o, t);
         folha_resultado(f, &a, o->limiar);
-        printf("\n%s\n", f->titulo);
-        imprimir_grades((const int (*)[PIXELS])f->pixels, 1);
+        k = mais_parecido(&d, f->pixels, &diferencas);
+        snprintf(rotulo, sizeof(rotulo), "Mais parecido: digito %d (%d dif.)",
+                 d.exemplos[k].rotulo, diferencas);
+        anexar_original(f, rotulo, d.exemplos[k].x);
+        imprimir_folha(f);
     }
     ok = gravar(o->saida, folhas, o->n);
     free(folhas);
+    dados_liberar(&d);
     return ok ? 0 : 1;
 }
 

@@ -122,6 +122,12 @@ static void coluna(int indice, char *s) {
     for (i = 0; i < n; ++i) s[i] = inverso[n - 1 - i];
     s[n] = 0;
 }
+/* Faixa do bloco 8 x 6 numero b da comparacao: 0 -> A12:F19, 1 -> H12:M19, ... */
+static void bloco(int b, char *s) {
+    char inicio[8], fim[8];
+    coluna(7 * b, inicio); coluna(7 * b + 5, fim);
+    sprintf(s, "%s12:%s19", inicio, fim);
+}
 static void celula_texto(Texto *t, const char *ref, const char *s, int estilo) {
     adicionar(t, "<c r=\"%s\" s=\"%d\" t=\"inlineStr\"><is><t>", ref, estilo);
     xml_texto(t, s); adicionar(t, "</t></is></c>");
@@ -151,7 +157,7 @@ static void folha_xml(Texto *t, const Planilha *p) {
         if (r == 4) celula_texto(t, "H5", "Vetor de 48 valores: A1:F1, A2:F2, ..., A8:F8.", 0);
         if (r == 5) celula_texto(t, "H6", "Na grade: 1 = traco; 0 = fundo (zero oculto).", 0);
         if (r == 6 && p->tem_probabilidades)
-            celula_texto(t, "H7", "A12:F19: probabilidades antes do limiar, em escala de cores fixa de 0 a 1.", 0);
+            celula_texto(t, "H7", "Linha 12, lado a lado: matrizes originais, resultado e probabilidades antes do limiar.", 0);
         if (r == 7) celula_texto(t, "H8", p->tem_probabilidades
             ? "Cores automaticas: 0 = branco; 0.5 = azul claro; 1 = azul escuro."
             : "Cores automaticas: 0 = branco; 1 = azul escuro.", 0);
@@ -159,12 +165,26 @@ static void folha_xml(Texto *t, const Planilha *p) {
     }
     adicionar(t, "<row r=\"10\">"); celula_texto(t, "A10", p->titulo, 5); adicionar(t, "</row>");
     if (p->tem_probabilidades) {
-        adicionar(t, "<row r=\"11\">"); celula_texto(t, "A11", "Probabilidades", 0); adicionar(t, "</row>");
+        /* Comparacao em A12: um bloco 8 x 6 a cada 7 colunas, nesta ordem:
+         * originais, resultado (formulas ligadas a A1:F8) e probabilidades. */
+        int resultado = p->n_originais, probabilidades = p->n_originais + 1, b;
+        adicionar(t, "<row r=\"11\">");
+        for (b = 0; b <= probabilidades; ++b) {
+            coluna(7 * b, col); snprintf(ref, sizeof(ref), "%s11", col);
+            celula_texto(t, ref, b < resultado ? p->rotulo_original[b]
+                : b == resultado ? "Resultado" : "Probabilidades", 5);
+        }
+        adicionar(t, "</row>");
         for (r = 0; r < 8; ++r) {
             adicionar(t, "<row r=\"%d\">", r + 12);
-            for (c = 0; c < 6; ++c) {
-                snprintf(ref, sizeof(ref), "%c%d", 'A' + c, r + 12);
-                adicionar(t, "<c r=\"%s\" s=\"4\"><v>%.17g</v></c>", ref, p->probabilidades[r * 6 + c]);
+            for (b = 0; b <= probabilidades; ++b) for (c = 0; c < 6; ++c) {
+                coluna(7 * b + c, col); i = r * 6 + c;
+                if (b < resultado)
+                    adicionar(t, "<c r=\"%s%d\" s=\"1\"><v>%d</v></c>", col, r + 12, p->originais[b][i]);
+                else if (b == resultado)
+                    adicionar(t, "<c r=\"%s%d\" s=\"1\"><f>%c%d</f><v>%d</v></c>", col, r + 12, 'A' + c, r + 1, p->pixels[i]);
+                else
+                    adicionar(t, "<c r=\"%s%d\" s=\"4\"><v>%.17g</v></c>", col, r + 12, p->probabilidades[i]);
             }
             adicionar(t, "</row>");
         }
@@ -172,20 +192,23 @@ static void folha_xml(Texto *t, const Planilha *p) {
     adicionar(t, "</sheetData>");
     /* Regras nativas de formatacao condicional: o Excel atualiza as cores
      * quando o usuario edita os valores ou as formulas sao recalculadas. */
-    adicionar(t, "<conditionalFormatting sqref=\"A1:F8 H1:BC1\">"
+    adicionar(t, "<conditionalFormatting sqref=\"A1:F8 H1:BC1");
+    if (p->tem_probabilidades) for (i = 0; i <= p->n_originais; ++i) { bloco(i, ref); adicionar(t, " %s", ref); }
+    adicionar(t, "\">"
         "<cfRule type=\"cellIs\" dxfId=\"0\" priority=\"1\" operator=\"greaterThanOrEqual\"><formula>0.5</formula></cfRule>"
         "<cfRule type=\"cellIs\" dxfId=\"1\" priority=\"2\" operator=\"lessThan\"><formula>0.5</formula></cfRule>"
         "</conditionalFormatting>");
     if (p->tem_probabilidades) {
         /* Limites NUMERICOS fixos; a mesma probabilidade recebe a mesma cor
          * em todas as abas, sem reescalar pelo minimo/maximo de cada desenho. */
-        adicionar(t, "<conditionalFormatting sqref=\"A12:F19\">"
+        bloco(p->n_originais + 1, ref);
+        adicionar(t, "<conditionalFormatting sqref=\"%s\">"
             "<cfRule type=\"colorScale\" priority=\"3\"><colorScale>"
             "<cfvo type=\"num\" val=\"0\"/><cfvo type=\"num\" val=\"0.5\"/><cfvo type=\"num\" val=\"1\"/>"
             "<color rgb=\"FFFFFFFF\"/><color rgb=\"FF93C5FD\"/><color rgb=\"FF1D4ED8\"/>"
             "</colorScale></cfRule>"
             "<cfRule type=\"cellIs\" dxfId=\"2\" priority=\"4\" operator=\"greaterThanOrEqual\"><formula>0.85</formula></cfRule>"
-            "</conditionalFormatting>");
+            "</conditionalFormatting>", ref);
     }
     adicionar(t, "<pageMargins left=\"0.5\" right=\"0.5\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/></worksheet>");
 }

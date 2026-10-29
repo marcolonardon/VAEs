@@ -3,6 +3,8 @@
 
 #include "grade.h"
 
+enum { MAX_ORIGINAIS = 2 };
+
 /* Exportador pequeno, especifico para grades 8x6, em OOXML/ZIP sem compressao.
  * Produz arquivos .xlsx reais. Nao e um leitor/editor generico de planilhas. */
 typedef struct {
@@ -13,6 +15,12 @@ typedef struct {
     int pixels[PIXELS];
     double probabilidades[PIXELS];
     int tem_probabilidades;
+    /* Matrizes de antes das operacoes (ex.: digitos A e B da mistura).
+     * Com tem_probabilidades, a linha 12 mostra lado a lado:
+     *   originais | resultado (= A1:F8) | probabilidades */
+    int n_originais;
+    char rotulo_original[MAX_ORIGINAIS][48];
+    int originais[MAX_ORIGINAIS][PIXELS];
 } Planilha;
 
 /* Retorna 1 no sucesso, 0 no erro. Recusa sobrescrever arquivos existentes. */

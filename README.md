@@ -114,7 +114,17 @@ Cada aba repete o layout da `gerar_num.xlsx`:
 | A1:F8 | Desenho 0/1; o 1 fica azul. |
 | H1:BC1 | Vetor de 48 valores, com fórmulas ligadas ao desenho. |
 | H3:H8 | Descrição e parâmetros do modelo. |
-| A12:F19 | Probabilidades do decoder antes do limiar (só em resultados do VAE). |
+| Linhas 11–19 | Comparação lado a lado (só em resultados do VAE), descrita abaixo. |
+
+Nas abas de resultado, a faixa da linha 12 põe as matrizes de antes da operação ao lado do que o VAE produziu. Cada bloco 8 × 6 começa 7 colunas depois do anterior:
+
+| Comando | Blocos, da esquerda para a direita |
+| --- | --- |
+| `misturar` | Original A · Original B · Resultado · Probabilidades |
+| `reconstruir` | Original · Resultado · Probabilidades |
+| `gerar` | Exemplo de treino mais parecido · Resultado · Probabilidades |
+
+O bloco "Resultado" usa fórmulas ligadas a A1:F8. Quando há vários exemplos do mesmo dígito, `misturar` mostra o primeiro deles. O terminal mostra as mesmas matrizes lado a lado.
 
 A pasta [exemplos/](exemplos) tem planilhas geradas com os parâmetros padrão.
 

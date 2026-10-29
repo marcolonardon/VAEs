@@ -30,8 +30,11 @@ def column(index):
     return result
 
 
-def read_book(path, count, threshold=0.5):
-    """Le cada aba: (grade de 48 valores, probabilidades ou [])."""
+def read_book(path, count, originals=None, threshold=0.5):
+    """Le cada aba: (grade A1:F8, probabilidades, [matrizes originais]).
+
+    originals = quantas matrizes originais a faixa da linha 12 deve ter;
+    None quando a aba nao tem essa faixa (dados de treino)."""
     result = []
     with zipfile.ZipFile(path) as z:
         assert z.testzip() is None
@@ -42,22 +45,35 @@ def read_book(path, count, threshold=0.5):
         for n in range(1, count + 1):
             tree = ET.fromstring(z.read(f"xl/worksheets/sheet{n}.xml"))
             cells = {c.attrib["r"]: c for c in tree.findall(".//s:c", NS)}
-            grid, probs = [], []
+            value = lambda ref: cells[ref].find("s:v", NS).text
+            block = lambda b, i: f"{column(7 * b + i % 6)}{i // 6 + 12}"
+            grid = []
             for i in range(48):
                 ref = f"{column(i % 6)}{i // 6 + 1}"
-                value = int(cells[ref].find("s:v", NS).text)
-                assert value in (0, 1)
-                grid.append(value)
+                grid.append(int(value(ref)))
+                assert grid[-1] in (0, 1)
                 vector_cell = cells[f"{column(i + 7)}1"]
                 assert vector_cell.find("s:f", NS).text == ref
-                assert int(vector_cell.find("s:v", NS).text) == value
-                prob_ref = f"{column(i % 6)}{i // 6 + 12}"
-                if prob_ref in cells:
-                    p = float(cells[prob_ref].find("s:v", NS).text)
-                    assert math.isfinite(p) and 0 <= p <= 1
-                    assert value == int(p >= threshold)
-                    probs.append(p)
-            result.append((grid, probs))
+                assert int(vector_cell.find("s:v", NS).text) == grid[-1]
+            if originals is None:
+                assert "A12" not in cells
+                result.append((grid, [], []))
+                continue
+            # Faixa da linha 12: originais | resultado (=A1:F8) | probabilidades
+            origs = [[int(value(block(b, i))) for i in range(48)] for b in range(originals)]
+            assert all(v in (0, 1) for o in origs for v in o)
+            probs = []
+            for i in range(48):
+                ref = f"{column(i % 6)}{i // 6 + 1}"
+                result_cell = cells[block(originals, i)]
+                assert result_cell.find("s:f", NS).text == ref
+                assert int(value(block(originals, i))) == grid[i]
+                p = float(value(block(originals + 1, i)))
+                assert math.isfinite(p) and 0 <= p <= 1
+                assert grid[i] == int(p >= threshold)
+                probs.append(p)
+            assert block(originals + 2, 0) not in cells
+            result.append((grid, probs, origs))
     return result
 
 
@@ -96,7 +112,7 @@ def test_all():
         templates_path = folder / "digitos.xlsx"
         run("mostrar", *common, "--saida", templates_path)
         templates = read_book(templates_path, 10)
-        assert [g for g, _ in templates] == data
+        assert [g for g, _, _ in templates] == data
         original_bytes = templates_path.read_bytes()
         run("mostrar", *common, "--saida", templates_path, expected=1)
         assert templates_path.read_bytes() == original_bytes, "Nao deve sobrescrever"
@@ -109,7 +125,7 @@ def test_all():
         assert "celulas erradas: 0/480" in output.splitlines()[-2], output
         corrupt = folder / "corrompido.bin"
         corrupt.write_bytes(model.read_bytes()[:-8])
-        run("gerar", "--modelo", corrupt, expected=1)
+        run("gerar", *common, "--modelo", corrupt, expected=1)
         model_bytes = model.read_bytes()
         run("treinar", *common, "--modelo", folder / "modelo2.bin")
         assert (folder / "modelo2.bin").read_bytes() == model_bytes, "Semente fixa deve reproduzir o modelo"
@@ -118,38 +134,42 @@ def test_all():
         # Reconstrucao
         rec = folder / "reconstrucao.xlsx"
         assert "Total: 0 de 480" in run("reconstruir", *common, *m, "--saida", rec)
-        assert [g for g, _ in read_book(rec, 10)] == data
+        reconstructions = read_book(rec, 10, originals=1)
+        assert [g for g, _, _ in reconstructions] == data
+        assert [o[0] for _, _, o in reconstructions] == data
 
         # Mistura: extremos reconstroem A e B; probabilidades mudam a cada passo.
         mix = folder / "mistura.xlsx"
         run("misturar", *common, *m, "--a", 0, "--b", 8, "--passos", 5, "--saida", mix)
-        sheets = read_book(mix, 5)
+        sheets = read_book(mix, 5, originals=2)
+        assert all(o == [data[0], data[8]] for _, _, o in sheets)
         assert sheets[0][0] == data[0]
         assert sheets[-1][0] == data[8]
-        assert len({tuple(p) for _, p in sheets}) == 5
+        assert len({tuple(p) for _, p, _ in sheets}) == 5
         repeat = folder / "repeticao.xlsx"
         run("misturar", *common, *m, "--a", 0, "--b", 8, "--passos", 5, "--saida", repeat)
         assert mix.read_bytes() == repeat.read_bytes(), "Mesmo modelo deve reproduzir o arquivo"
         single = folder / "unica.xlsx"
         run("misturar", *common, *m, "--a", 0, "--b", 8, "--alpha", .5, "--saida", single)
-        assert read_book(single, 1)[0] == sheets[2]
+        assert read_book(single, 1, originals=2)[0] == sheets[2]
         low = folder / "limiar.xlsx"
         run("misturar", *common, *m, "--a", 0, "--b", 8, "--alpha", .5, "--limiar", .3, "--saida", low)
-        low_sheet = read_book(low, 1, threshold=.3)[0]
+        low_sheet = read_book(low, 1, originals=2, threshold=.3)[0]
         assert low_sheet[1] == sheets[2][1]
         assert sum(low_sheet[0]) >= sum(sheets[2][0])
         noisy = folder / "ruido.xlsx"
         run("misturar", *common, *m, "--a", 0, "--b", 8, "--alpha", .5, "--ruido", .2, "--saida", noisy)
-        assert read_book(noisy, 1)[0][1] != sheets[2][1]
+        assert read_book(noisy, 1, originals=2)[0][1] != sheets[2][1]
 
         # Geracao a partir de z ~ N(0, I)
         gen = folder / "gerados.xlsx"
-        run("gerar", *m, "--n", 7, "--saida", gen)
-        generated = read_book(gen, 7)
-        assert len({tuple(p) for _, p in generated}) == 7
+        run("gerar", *common, *m, "--n", 7, "--saida", gen)
+        generated = read_book(gen, 7, originals=1)
+        assert all(o[0] in data for _, _, o in generated)
+        assert len({tuple(p) for _, p, _ in generated}) == 7
         gen2 = folder / "gerados2.xlsx"
-        run("gerar", *m, "--n", 7, "--semente", 7, "--saida", gen2)
-        assert read_book(gen2, 7) != generated
+        run("gerar", *common, *m, "--n", 7, "--semente", 7, "--saida", gen2)
+        assert read_book(gen2, 7, originals=1) != generated
     print("OK: argumentos, dados, modelo, ZIP/XML, reconstrucao, mistura, limiar, ruido, geracao e reproducibilidade.")
 
 
