@@ -1,6 +1,8 @@
 #ifndef XLSX_H
 #define XLSX_H
 
+#include "grade.h"
+
 /* Exportador pequeno, especifico para grades 8x6, em OOXML/ZIP sem compressao.
  * Produz arquivos .xlsx reais. Nao e um leitor/editor generico de planilhas. */
 typedef struct {
@@ -8,8 +10,8 @@ typedef struct {
     char titulo[96];
     char descricao[256];
     char parametros[256];
-    int pixels[48];
-    double probabilidades[48];
+    int pixels[PIXELS];
+    double probabilidades[PIXELS];
     int tem_probabilidades;
 } Planilha;
 

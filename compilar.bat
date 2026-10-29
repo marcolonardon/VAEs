@@ -13,11 +13,11 @@ if not exist "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" goto ausente
 call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat"
 if errorlevel 1 goto falhou
 :msvc
-cl /nologo /O2 /W4 /WX /std:c11 /MT /D_CRT_SECURE_NO_WARNINGS /Fe:build\vae.exe /Fo:build\ src\vae.c src\xlsx.c
+cl /nologo /O2 /W4 /WX /std:c11 /MT /D_CRT_SECURE_NO_WARNINGS /Fe:build\vae.exe /Fo:build\ src\*.c
 if errorlevel 1 goto falhou
 goto sucesso
 :gcc
-gcc -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror src\vae.c src\xlsx.c -lm -o build\vae.exe
+gcc -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror src\*.c -lm -o build\vae.exe
 if errorlevel 1 goto falhou
 :sucesso
 echo Executavel criado: build\vae.exe
