@@ -1,8 +1,12 @@
+# Compilacao
 build/
 build-cmake/
-node_modules/
-qa/
-resultados/
-__pycache__/
 *.obj
 *.pdb
+
+# Saidas geradas localmente (os exemplos versionados ficam em exemplos/)
+modelo.bin
+resultados/
+/*.xlsx
+
+__pycache__/
