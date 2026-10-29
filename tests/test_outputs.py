@@ -30,11 +30,15 @@ def column(index):
     return result
 
 
-def read_book(path, count, originals=None, threshold=0.5):
-    """Le cada aba: (grade A1:F8, probabilidades, [matrizes originais]).
+GRID_ROW, PROB_ROW, VECTOR_ROW = 4, 14, 24
+STYLE_GRID = {0: "1", 1: "2"}
 
-    originals = quantas matrizes originais a faixa da linha 12 deve ter;
-    None quando a aba nao tem essa faixa (dados de treino)."""
+
+def read_book(path, count, originals=0, threshold=0.5):
+    """Le cada aba: (resultado, probabilidades ou [], [matrizes originais]).
+
+    No topo, nas linhas 4 a 11, ficam os blocos 8 x 6 lado a lado, a cada
+    7 colunas: primeiro as `originals` matrizes originais, depois o resultado."""
     result = []
     with zipfile.ZipFile(path) as z:
         assert z.testzip() is None
@@ -42,38 +46,40 @@ def read_book(path, count, originals=None, threshold=0.5):
             ET.fromstring(z.read(name))
         book = ET.fromstring(z.read("xl/workbook.xml"))
         assert len(book.find("s:sheets", NS)) == count
+        # Na formatacao condicional o Excel le a cor solida de bgColor;
+        # fgColor ali deixava as grades pretas.
+        dxfs = ET.fromstring(z.read("xl/styles.xml")).find("s:dxfs", NS)
+        assert dxfs.find(".//s:fgColor", NS) is None
+        assert len(dxfs.findall(".//s:bgColor[@rgb]", NS)) == 2
         for n in range(1, count + 1):
             tree = ET.fromstring(z.read(f"xl/worksheets/sheet{n}.xml"))
             cells = {c.attrib["r"]: c for c in tree.findall(".//s:c", NS)}
             value = lambda ref: cells[ref].find("s:v", NS).text
-            block = lambda b, i: f"{column(7 * b + i % 6)}{i // 6 + 12}"
-            grid = []
+            ref = lambda b, i, row: f"{column(7 * b + i % 6)}{row + i // 6}"
+
+            def grid(b):
+                values = [int(value(ref(b, i, GRID_ROW))) for i in range(48)]
+                for i, v in enumerate(values):
+                    assert v in (0, 1)
+                    # Cor gravada na propria celula: 1 = azul, 0 = branco.
+                    assert cells[ref(b, i, GRID_ROW)].attrib["s"] == STYLE_GRID[v]
+                return values
+
+            origs = [grid(b) for b in range(originals)]
+            res = grid(originals)
+            assert ref(originals + 1, 0, GRID_ROW) not in cells
             for i in range(48):
-                ref = f"{column(i % 6)}{i // 6 + 1}"
-                grid.append(int(value(ref)))
-                assert grid[-1] in (0, 1)
-                vector_cell = cells[f"{column(i + 7)}1"]
-                assert vector_cell.find("s:f", NS).text == ref
-                assert int(vector_cell.find("s:v", NS).text) == grid[-1]
-            if originals is None:
-                assert "A12" not in cells
-                result.append((grid, [], []))
-                continue
-            # Faixa da linha 12: originais | resultado (=A1:F8) | probabilidades
-            origs = [[int(value(block(b, i))) for i in range(48)] for b in range(originals)]
-            assert all(v in (0, 1) for o in origs for v in o)
+                vector_cell = cells[f"{column(i)}{VECTOR_ROW}"]
+                assert vector_cell.find("s:f", NS).text == ref(originals, i, GRID_ROW)
+                assert int(value(f"{column(i)}{VECTOR_ROW}")) == res[i]
             probs = []
-            for i in range(48):
-                ref = f"{column(i % 6)}{i // 6 + 1}"
-                result_cell = cells[block(originals, i)]
-                assert result_cell.find("s:f", NS).text == ref
-                assert int(value(block(originals, i))) == grid[i]
-                p = float(value(block(originals + 1, i)))
-                assert math.isfinite(p) and 0 <= p <= 1
-                assert grid[i] == int(p >= threshold)
-                probs.append(p)
-            assert block(originals + 2, 0) not in cells
-            result.append((grid, probs, origs))
+            if ref(0, 0, PROB_ROW) in cells:
+                for i in range(48):
+                    p = float(value(ref(0, i, PROB_ROW)))
+                    assert math.isfinite(p) and 0 <= p <= 1
+                    assert res[i] == int(p >= threshold)
+                    probs.append(p)
+            result.append((res, probs, origs))
     return result
 
 
@@ -113,6 +119,7 @@ def test_all():
         run("mostrar", *common, "--saida", templates_path)
         templates = read_book(templates_path, 10)
         assert [g for g, _, _ in templates] == data
+        assert all(not p and not o for _, p, o in templates)
         original_bytes = templates_path.read_bytes()
         run("mostrar", *common, "--saida", templates_path, expected=1)
         assert templates_path.read_bytes() == original_bytes, "Nao deve sobrescrever"
@@ -135,6 +142,7 @@ def test_all():
         rec = folder / "reconstrucao.xlsx"
         assert "Total: 0 de 480" in run("reconstruir", *common, *m, "--saida", rec)
         reconstructions = read_book(rec, 10, originals=1)
+        assert all(p for _, p, _ in reconstructions)
         assert [g for g, _, _ in reconstructions] == data
         assert [o[0] for _, _, o in reconstructions] == data
 

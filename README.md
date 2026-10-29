@@ -76,7 +76,11 @@ Também há um [CMakeLists.txt](CMakeLists.txt).
 .\build\vae.exe ajuda                         # todas as opções
 ```
 
-O `gerar_exemplo.bat` faz tudo de uma vez e grava as planilhas em `resultados\`.
+### Misturar dois números sem digitar comandos
+
+Dê dois cliques em `misturar.bat`. Ele pergunta o primeiro e o segundo dígito e quantas etapas fazer. Depois treina o modelo, se ainda não existir, e abre a planilha `resultados\mistura_A_B.xlsx`. Também aceita os números direto: `misturar.bat 3 5`.
+
+O `gerar_exemplo.bat` gera de uma vez uma mistura de 0 com 8 e dez dígitos sorteados em `resultados\`.
 
 Opções principais:
 
@@ -97,6 +101,8 @@ Use ponto decimal (`0.5`, não `0,5`).
 
 ### Mistura
 
+Só o comando `misturar` mistura dois números, escolhidos com `--a` e `--b` (padrão: 0 e 8). `reconstruir` e `gerar` não misturam nada. Com `--passos 5`, as abas vão de 0% a 100% do dígito B. Com 0% sai o A reconstruído, com 100% sai o B, e no meio ficam as misturas.
+
 ```text
 μ_A = média de μ(x) dos exemplos do dígito A        (idem para B)
 z   = (1 − α) · μ_A + α · μ_B
@@ -107,24 +113,30 @@ A porcentagem se refere à posição no espaço latente, não à quantidade de c
 
 ## Planilhas
 
-Cada aba repete o layout da `gerar_num.xlsx`:
+Cada aba começa com os desenhos **pintados lado a lado**: primeiro as matrizes de antes da operação, depois o resultado. O 1 fica azul e o 0 fica branco. As cores estão gravadas na própria célula, então aparecem em qualquer programa. O Excel também recolore a célula se você mudar o valor.
 
-| Região | Conteúdo |
+```text
+Mistura do 3 com o 5: 50% do 3 + 50% do 5
+A: digito 3      B: digito 5      Mistura (50% do 5)
+[desenho 8×6]    [desenho 8×6]    [desenho 8×6]
+```
+
+| Comando | Blocos no topo, da esquerda para a direita |
 | --- | --- |
-| A1:F8 | Desenho 0/1; o 1 fica azul. |
-| H1:BC1 | Vetor de 48 valores, com fórmulas ligadas ao desenho. |
-| H3:H8 | Descrição e parâmetros do modelo. |
-| Linhas 11–19 | Comparação lado a lado (só em resultados do VAE), descrita abaixo. |
+| `misturar` | Dígito A · Dígito B · Mistura |
+| `reconstruir` | Original · Reconstrução |
+| `gerar` | Exemplo de treino mais parecido · Gerado |
+| `mostrar` | O dígito de treino |
 
-Nas abas de resultado, a faixa da linha 12 põe as matrizes de antes da operação ao lado do que o VAE produziu. Cada bloco 8 × 6 começa 7 colunas depois do anterior:
+Embaixo dos desenhos ficam:
 
-| Comando | Blocos, da esquerda para a direita |
+| Linhas | Conteúdo |
 | --- | --- |
-| `misturar` | Original A · Original B · Resultado · Probabilidades |
-| `reconstruir` | Original · Resultado · Probabilidades |
-| `gerar` | Exemplo de treino mais parecido · Resultado · Probabilidades |
+| 13–21 | Probabilidades do resultado antes do limiar (mais escuro = mais perto de 1). |
+| 23–24 | Vetor de 48 valores do resultado, com fórmulas ligadas ao desenho. |
+| 26–27 | Parâmetros do modelo e legenda das cores. |
 
-O bloco "Resultado" usa fórmulas ligadas a A1:F8. Quando há vários exemplos do mesmo dígito, `misturar` mostra o primeiro deles. O terminal mostra as mesmas matrizes lado a lado.
+Quando há vários exemplos do mesmo dígito, `misturar` mostra o primeiro deles. O terminal mostra as mesmas matrizes lado a lado.
 
 A pasta [exemplos/](exemplos) tem planilhas geradas com os parâmetros padrão.
 

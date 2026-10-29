@@ -213,7 +213,7 @@ static void imprimir_folha(const Planilha *f) {
         printf("%s | ", f->rotulo_original[b]);
         memcpy(grades[b], f->originais[b], sizeof(grades[b]));
     }
-    printf("Resultado\n");
+    printf("%s\n", f->rotulo_resultado);
     memcpy(grades[f->n_originais], f->pixels, sizeof(grades[0]));
     imprimir_grades((const int (*)[PIXELS])grades, f->n_originais + 1);
 }
@@ -281,7 +281,8 @@ static int cmd_reconstruir(const Opcoes *o, const Pesos *w, const Treino *t) {
         }
         total += erros;
         snprintf(f->nome, sizeof(f->nome), "Exemplo_%03d", k + 1);
-        snprintf(f->titulo, sizeof(f->titulo), "Reconstrucao do digito %d", d.exemplos[k].rotulo);
+        snprintf(f->titulo, sizeof(f->titulo), "Reconstrucao do digito %d (nao e mistura)", d.exemplos[k].rotulo);
+        snprintf(f->rotulo_resultado, sizeof(f->rotulo_resultado), "Reconstrucao");
         snprintf(f->descricao, sizeof(f->descricao),
                  "Exemplo %d passado pelo VAE com z = mu; %d celula(s) diferente(s) do original.",
                  k + 1, erros);
@@ -367,8 +368,8 @@ static int cmd_misturar(const Opcoes *o, const Pesos *w, const Treino *t) {
     /* Para comparacao, o primeiro exemplo de cada digito. */
     x_a = d.exemplos[primeiro_exemplo(&d, o->a)].x;
     x_b = d.exemplos[primeiro_exemplo(&d, o->b)].x;
-    snprintf(rotulo_a, sizeof(rotulo_a), "Original %d (A)", o->a);
-    snprintf(rotulo_b, sizeof(rotulo_b), "Original %d (B)", o->b);
+    snprintf(rotulo_a, sizeof(rotulo_a), "A: digito %d", o->a);
+    snprintf(rotulo_b, sizeof(rotulo_b), "B: digito %d", o->b);
     rng.estado = o->treino.semente;
 
     for (s = 0; s < quantidade; ++s) {
@@ -382,9 +383,12 @@ static int cmd_misturar(const Opcoes *o, const Pesos *w, const Treino *t) {
         }
         vae_decodificar(w, &a);
         snprintf(f->nome, sizeof(f->nome), "Mistura_%03d", s + 1);
-        snprintf(f->titulo, sizeof(f->titulo), "%d + %d | %.1f%% de %d", o->a, o->b, alpha * 100, o->b);
-        snprintf(f->descricao, sizeof(f->descricao), "Mistura latente: %.2f%% de %d e %.2f%% de %d; ruido=%.3g.",
-                 (1 - alpha) * 100, o->a, alpha * 100, o->b, o->ruido);
+        snprintf(f->titulo, sizeof(f->titulo), "Mistura do %d com o %d: %.4g%% do %d + %.4g%% do %d",
+                 o->a, o->b, (1 - alpha) * 100, o->a, alpha * 100, o->b);
+        snprintf(f->rotulo_resultado, sizeof(f->rotulo_resultado), "Mistura (%.4g%% do %d)", alpha * 100, o->b);
+        snprintf(f->descricao, sizeof(f->descricao),
+                 "O VAE codifica A e B em mu(A) e mu(B) e decodifica z = %.4g%% mu(A) + %.4g%% mu(B)%s.",
+                 (1 - alpha) * 100, alpha * 100, o->ruido > 0 ? " + ruido" : "");
         descrever_modelo(f, o, t);
         folha_resultado(f, &a, o->limiar);
         anexar_original(f, rotulo_a, x_a);
@@ -421,7 +425,8 @@ static int cmd_gerar(const Opcoes *o, const Pesos *w, const Treino *t) {
         }
         vae_decodificar(w, &a);
         snprintf(f->nome, sizeof(f->nome), "Gerado_%03d", s + 1);
-        snprintf(f->titulo, sizeof(f->titulo), "Digito gerado %d", s + 1);
+        snprintf(f->titulo, sizeof(f->titulo), "Digito gerado %d (nao e mistura: z sorteado)", s + 1);
+        snprintf(f->rotulo_resultado, sizeof(f->rotulo_resultado), "Gerado");
         snprintf(f->descricao, sizeof(f->descricao),
                  "z sorteado de N(0, I) com semente %u e decodificado.", (unsigned)o->treino.semente);
         descrever_modelo(f, o, t);
@@ -462,6 +467,7 @@ static int cmd_mostrar(const Opcoes *o) {
             Planilha *f = &folhas[k];
             snprintf(f->nome, sizeof(f->nome), "Exemplo_%03d", k + 1);
             snprintf(f->titulo, sizeof(f->titulo), "Digito %d", d.exemplos[k].rotulo);
+            snprintf(f->rotulo_resultado, sizeof(f->rotulo_resultado), "Digito %d", d.exemplos[k].rotulo);
             snprintf(f->descricao, sizeof(f->descricao), "Exemplo %d de treino; grade 8 x 6.", k + 1);
             snprintf(f->parametros, sizeof(f->parametros), "Arquivo de dados: %s", o->dados);
             memcpy(f->pixels, grade, sizeof(grade));

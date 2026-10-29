@@ -115,100 +115,147 @@ static void zip_finalizar(Zip *z) {
     u32(z, fim - inicio); u32(z, inicio); u16(z, 0);
 }
 
-/* Colunas Excel, indice baseado em zero: 0=A, 7=H, 54=BC. */
+/* Layout de cada aba (linhas do Excel):
+ *   1       titulo
+ *   2       descricao
+ *   3       rotulos dos blocos
+ *   4..11   originais e resultado lado a lado, um bloco 8 x 6 a cada 7 colunas
+ *   13..21  probabilidades do resultado (so em resultados do VAE)
+ *   23..24  vetor de 48 valores do resultado, com formulas ligadas ao bloco
+ *   26..27  parametros e legenda
+ * As cores sao gravadas em cada celula (aparecem em qualquer leitor) e
+ * tambem como formatacao condicional (o Excel recolore se o valor mudar). */
+enum {
+    LINHA_TITULO = 1, LINHA_DESCRICAO = 2, LINHA_ROTULOS = 3, LINHA_GRADES = 4,
+    LINHA_PROB_ROTULO = 13, LINHA_PROB = 14,
+    LINHA_VETOR_ROTULO = 23, LINHA_VETOR = 24,
+    LINHA_PARAMETROS = 26, LINHA_LEGENDA = 27
+};
+/* Estilos definidos em cellXfs (ver escrever_xlsx). */
+enum {
+    ESTILO_TEXTO = 0, ESTILO_GRADE_0 = 1, ESTILO_GRADE_1 = 2,
+    ESTILO_VETOR_0 = 3, ESTILO_VETOR_1 = 4, ESTILO_TITULO = 5,
+    ESTILO_PROB = 6, FAIXAS_PROB = 5  /* estilos 6..10: probabilidade 0-0.2, ..., 0.8-1 */
+};
+
+/* Colunas Excel, indice baseado em zero: 0=A, 7=H, 47=AV. */
 static void coluna(int indice, char *s) {
     char inverso[8]; int n = 0, i;
     do { inverso[n++] = (char)('A' + indice % 26); indice = indice / 26 - 1; } while (indice >= 0);
     for (i = 0; i < n; ++i) s[i] = inverso[n - 1 - i];
     s[n] = 0;
 }
-/* Faixa do bloco 8 x 6 numero b da comparacao: 0 -> A12:F19, 1 -> H12:M19, ... */
-static void bloco(int b, char *s) {
-    char inicio[8], fim[8];
-    coluna(7 * b, inicio); coluna(7 * b + 5, fim);
-    sprintf(s, "%s12:%s19", inicio, fim);
+/* Referencia da celula i (0..47) do bloco b, a partir da linha inicial. */
+static void celula_bloco(int b, int i, int linha_inicial, char *ref) {
+    char col[8];
+    coluna(7 * b + i % COLUNAS, col);
+    sprintf(ref, "%s%d", col, linha_inicial + i / COLUNAS);
+}
+/* Faixa inteira do bloco b, por exemplo "H4:M11". */
+static void faixa_bloco(int b, int linha_inicial, char *s) {
+    char inicio[16], fim[16];
+    celula_bloco(b, 0, linha_inicial, inicio);
+    celula_bloco(b, PIXELS - 1, linha_inicial, fim);
+    sprintf(s, "%s:%s", inicio, fim);
 }
 static void celula_texto(Texto *t, const char *ref, const char *s, int estilo) {
     adicionar(t, "<c r=\"%s\" s=\"%d\" t=\"inlineStr\"><is><t>", ref, estilo);
     xml_texto(t, s); adicionar(t, "</t></is></c>");
 }
+static void linha_texto(Texto *t, int linha, const char *s, int estilo) {
+    char ref[16];
+    sprintf(ref, "A%d", linha);
+    adicionar(t, "<row r=\"%d\">", linha); celula_texto(t, ref, s, estilo); adicionar(t, "</row>");
+}
+static int estilo_probabilidade(double p) {
+    int faixa = (int)(p * FAIXAS_PROB);
+    if (faixa < 0) faixa = 0;
+    if (faixa >= FAIXAS_PROB) faixa = FAIXAS_PROB - 1;
+    return ESTILO_PROB + faixa;
+}
 
 static void folha_xml(Texto *t, const Planilha *p) {
-    int r, c, i;
-    char ref[16], col[8];
+    int blocos = p->n_originais + 1, resultado = p->n_originais;
+    int r, c, b, i;
+    char ref[16], faixa[32], texto[160];
     cabecalho(t);
-    adicionar(t, "<worksheet xmlns=\"%s\"><dimension ref=\"A1:BC%d\"/>"
-        "<sheetViews><sheetView workbookViewId=\"0\" showGridLines=\"1\"><selection activeCell=\"H10\" sqref=\"H10\"/></sheetView></sheetViews>"
-        "<sheetFormatPr defaultRowHeight=\"15\"/><cols>"
-        "<col min=\"1\" max=\"6\" width=\"4.57\" customWidth=\"1\"/>"
-        "<col min=\"7\" max=\"7\" width=\"3\" customWidth=\"1\"/>"
-        "<col min=\"8\" max=\"55\" width=\"4.57\" customWidth=\"1\"/></cols><sheetData>", XML_NS, p->tem_probabilidades ? 19 : 10);
-    for (r = 0; r < 8; ++r) {
-        adicionar(t, "<row r=\"%d\">", r + 1);
-        for (c = 0; c < 6; ++c)
-            adicionar(t, "<c r=\"%c%d\" s=\"1\"><v>%d</v></c>", 'A' + c, r + 1, p->pixels[r * 6 + c]);
-        if (r == 0) for (i = 0; i < 48; ++i) {
-            coluna(i + 7, col);
-            adicionar(t, "<c r=\"%s1\" s=\"%d\"><f>%c%d</f><v>%d</v></c>",
-                col, (i / 6) % 2 ? 3 : 2, 'A' + i % 6, i / 6 + 1, p->pixels[i]);
+    adicionar(t, "<worksheet xmlns=\"%s\"><dimension ref=\"A1:AV%d\"/>"
+        "<sheetViews><sheetView workbookViewId=\"0\" showGridLines=\"0\"><selection activeCell=\"A1\" sqref=\"A1\"/></sheetView></sheetViews>"
+        "<sheetFormatPr defaultRowHeight=\"15\"/><cols><col min=\"1\" max=\"48\" width=\"4.57\" customWidth=\"1\"/></cols><sheetData>",
+        XML_NS, LINHA_LEGENDA);
+    linha_texto(t, LINHA_TITULO, p->titulo, ESTILO_TITULO);
+    linha_texto(t, LINHA_DESCRICAO, p->descricao, ESTILO_TEXTO);
+
+    /* Rotulos e grades: originais primeiro, resultado por ultimo. */
+    adicionar(t, "<row r=\"%d\">", LINHA_ROTULOS);
+    for (b = 0; b < blocos; ++b) {
+        celula_bloco(b, 0, LINHA_ROTULOS, ref);
+        celula_texto(t, ref, b < resultado ? p->rotulo_original[b] : p->rotulo_resultado, ESTILO_TITULO);
+    }
+    adicionar(t, "</row>");
+    for (r = 0; r < LINHAS; ++r) {
+        adicionar(t, "<row r=\"%d\">", LINHA_GRADES + r);
+        for (b = 0; b < blocos; ++b) for (c = 0; c < COLUNAS; ++c) {
+            int v = b < resultado ? p->originais[b][r * COLUNAS + c] : p->pixels[r * COLUNAS + c];
+            celula_bloco(b, r * COLUNAS + c, LINHA_GRADES, ref);
+            adicionar(t, "<c r=\"%s\" s=\"%d\"><v>%d</v></c>", ref, v ? ESTILO_GRADE_1 : ESTILO_GRADE_0, v);
         }
-        if (r == 2) celula_texto(t, "H3", p->descricao, 0);
-        if (r == 3) celula_texto(t, "H4", p->parametros, 0);
-        if (r == 4) celula_texto(t, "H5", "Vetor de 48 valores: A1:F1, A2:F2, ..., A8:F8.", 0);
-        if (r == 5) celula_texto(t, "H6", "Na grade: 1 = traco; 0 = fundo (zero oculto).", 0);
-        if (r == 6 && p->tem_probabilidades)
-            celula_texto(t, "H7", "Linha 12, lado a lado: matrizes originais, resultado e probabilidades antes do limiar.", 0);
-        if (r == 7) celula_texto(t, "H8", p->tem_probabilidades
-            ? "Cores automaticas: 0 = branco; 0.5 = azul claro; 1 = azul escuro."
-            : "Cores automaticas: 0 = branco; 1 = azul escuro.", 0);
         adicionar(t, "</row>");
     }
-    adicionar(t, "<row r=\"10\">"); celula_texto(t, "A10", p->titulo, 5); adicionar(t, "</row>");
+
     if (p->tem_probabilidades) {
-        /* Comparacao em A12: um bloco 8 x 6 a cada 7 colunas, nesta ordem:
-         * originais, resultado (formulas ligadas a A1:F8) e probabilidades. */
-        int resultado = p->n_originais, probabilidades = p->n_originais + 1, b;
-        adicionar(t, "<row r=\"11\">");
-        for (b = 0; b <= probabilidades; ++b) {
-            coluna(7 * b, col); snprintf(ref, sizeof(ref), "%s11", col);
-            celula_texto(t, ref, b < resultado ? p->rotulo_original[b]
-                : b == resultado ? "Resultado" : "Probabilidades", 5);
-        }
-        adicionar(t, "</row>");
-        for (r = 0; r < 8; ++r) {
-            adicionar(t, "<row r=\"%d\">", r + 12);
-            for (b = 0; b <= probabilidades; ++b) for (c = 0; c < 6; ++c) {
-                coluna(7 * b + c, col); i = r * 6 + c;
-                if (b < resultado)
-                    adicionar(t, "<c r=\"%s%d\" s=\"1\"><v>%d</v></c>", col, r + 12, p->originais[b][i]);
-                else if (b == resultado)
-                    adicionar(t, "<c r=\"%s%d\" s=\"1\"><f>%c%d</f><v>%d</v></c>", col, r + 12, 'A' + c, r + 1, p->pixels[i]);
-                else
-                    adicionar(t, "<c r=\"%s%d\" s=\"4\"><v>%.17g</v></c>", col, r + 12, p->probabilidades[i]);
+        linha_texto(t, LINHA_PROB_ROTULO, "Probabilidades do resultado, antes do limiar", ESTILO_TITULO);
+        for (r = 0; r < LINHAS; ++r) {
+            adicionar(t, "<row r=\"%d\">", LINHA_PROB + r);
+            for (c = 0; c < COLUNAS; ++c) {
+                double prob = p->probabilidades[r * COLUNAS + c];
+                celula_bloco(0, r * COLUNAS + c, LINHA_PROB, ref);
+                adicionar(t, "<c r=\"%s\" s=\"%d\"><v>%.17g</v></c>", ref, estilo_probabilidade(prob), prob);
             }
             adicionar(t, "</row>");
         }
     }
+
+    /* Vetor de 48 valores, lido linha a linha do bloco do resultado. */
+    faixa_bloco(resultado, LINHA_GRADES, faixa);
+    snprintf(texto, sizeof(texto), "Vetor de 48 valores do resultado (%s, linha a linha)", faixa);
+    linha_texto(t, LINHA_VETOR_ROTULO, texto, ESTILO_TITULO);
+    adicionar(t, "<row r=\"%d\">", LINHA_VETOR);
+    for (i = 0; i < PIXELS; ++i) {
+        char col[8], origem[16];
+        coluna(i, col);
+        celula_bloco(resultado, i, LINHA_GRADES, origem);
+        adicionar(t, "<c r=\"%s%d\" s=\"%d\"><f>%s</f><v>%d</v></c>", col, LINHA_VETOR,
+            p->pixels[i] ? ESTILO_VETOR_1 : ESTILO_VETOR_0, origem, p->pixels[i]);
+    }
+    adicionar(t, "</row>");
+    linha_texto(t, LINHA_PARAMETROS, p->parametros, ESTILO_TEXTO);
+    linha_texto(t, LINHA_LEGENDA, p->tem_probabilidades
+        ? "Cores: 1 = azul (traco); 0 = branco (fundo). Probabilidades: quanto mais escuro, mais perto de 1."
+        : "Cores: 1 = azul (traco); 0 = branco (fundo).", ESTILO_TEXTO);
     adicionar(t, "</sheetData>");
-    /* Regras nativas de formatacao condicional: o Excel atualiza as cores
-     * quando o usuario edita os valores ou as formulas sao recalculadas. */
-    adicionar(t, "<conditionalFormatting sqref=\"A1:F8 H1:BC1");
-    if (p->tem_probabilidades) for (i = 0; i <= p->n_originais; ++i) { bloco(i, ref); adicionar(t, " %s", ref); }
-    adicionar(t, "\">"
+
+    /* Formatacao condicional: mesmas cores, recalculadas pelo Excel. */
+    adicionar(t, "<conditionalFormatting sqref=\"");
+    for (b = 0; b < blocos; ++b) {
+        faixa_bloco(b, LINHA_GRADES, faixa);
+        adicionar(t, "%s ", faixa);
+    }
+    adicionar(t, "A%d:AV%d\">"
         "<cfRule type=\"cellIs\" dxfId=\"0\" priority=\"1\" operator=\"greaterThanOrEqual\"><formula>0.5</formula></cfRule>"
         "<cfRule type=\"cellIs\" dxfId=\"1\" priority=\"2\" operator=\"lessThan\"><formula>0.5</formula></cfRule>"
-        "</conditionalFormatting>");
+        "</conditionalFormatting>", LINHA_VETOR, LINHA_VETOR);
     if (p->tem_probabilidades) {
         /* Limites NUMERICOS fixos; a mesma probabilidade recebe a mesma cor
          * em todas as abas, sem reescalar pelo minimo/maximo de cada desenho. */
-        bloco(p->n_originais + 1, ref);
+        faixa_bloco(0, LINHA_PROB, faixa);
         adicionar(t, "<conditionalFormatting sqref=\"%s\">"
             "<cfRule type=\"colorScale\" priority=\"3\"><colorScale>"
             "<cfvo type=\"num\" val=\"0\"/><cfvo type=\"num\" val=\"0.5\"/><cfvo type=\"num\" val=\"1\"/>"
             "<color rgb=\"FFFFFFFF\"/><color rgb=\"FF93C5FD\"/><color rgb=\"FF1D4ED8\"/>"
             "</colorScale></cfRule>"
-            "<cfRule type=\"cellIs\" dxfId=\"2\" priority=\"4\" operator=\"greaterThanOrEqual\"><formula>0.85</formula></cfRule>"
-            "</conditionalFormatting>", ref);
+            "<cfRule type=\"cellIs\" dxfId=\"2\" priority=\"4\" operator=\"greaterThanOrEqual\"><formula>0.6</formula></cfRule>"
+            "</conditionalFormatting>", faixa);
     }
     adicionar(t, "<pageMargins left=\"0.5\" right=\"0.5\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/></worksheet>");
 }
@@ -244,25 +291,41 @@ int escrever_xlsx(const char *caminho, const Planilha *folhas, int quantidade) {
     zip_adicionar(&z, "xl/_rels/workbook.xml.rels", &t);
     cabecalho(&t); adicionar(&t,
         "<styleSheet xmlns=\"%s\"><numFmts count=\"1\"><numFmt numFmtId=\"164\" formatCode=\"0;-0;;@\"/></numFmts>"
-        "<fonts count=\"3\"><font><sz val=\"11\"/><name val=\"Arial\"/></font><font><sz val=\"9\"/><name val=\"Arial\"/></font><font><b/><sz val=\"11\"/><name val=\"Arial\"/></font></fonts>"
-        "<fills count=\"4\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill>"
-        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFE8EBED\"/><bgColor indexed=\"64\"/></patternFill></fill>"
-        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFE7DDF2\"/><bgColor indexed=\"64\"/></patternFill></fill></fills>"
+        "<fonts count=\"5\"><font><sz val=\"11\"/><name val=\"Arial\"/></font><font><sz val=\"9\"/><name val=\"Arial\"/></font>"
+        "<font><b/><sz val=\"11\"/><name val=\"Arial\"/></font><font><b/><sz val=\"11\"/><color rgb=\"FFFFFFFF\"/><name val=\"Arial\"/></font>"
+        "<font><sz val=\"9\"/><color rgb=\"FFFFFFFF\"/><name val=\"Arial\"/></font></fonts>"
+        /* Preenchimentos: 2 = branco, 3 = azul do traco, 4..8 = escala das probabilidades. */
+        "<fills count=\"9\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFFFFFFF\"/><bgColor indexed=\"64\"/></patternFill></fill>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF1D4ED8\"/><bgColor indexed=\"64\"/></patternFill></fill>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFE9F3FF\"/><bgColor indexed=\"64\"/></patternFill></fill>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFBEDCFE\"/><bgColor indexed=\"64\"/></patternFill></fill>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF93C5FD\"/><bgColor indexed=\"64\"/></patternFill></fill>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF6495EE\"/><bgColor indexed=\"64\"/></patternFill></fill>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF3566DF\"/><bgColor indexed=\"64\"/></patternFill></fill></fills>"
         "<borders count=\"2\"><border><left/><right/><top/><bottom/><diagonal/></border>"
-        "<border><left style=\"thin\"><color rgb=\"FF666666\"/></left><right style=\"thin\"><color rgb=\"FF666666\"/></right>"
-        "<top style=\"thin\"><color rgb=\"FF666666\"/></top><bottom style=\"thin\"><color rgb=\"FF666666\"/></bottom><diagonal/></border></borders>"
+        "<border><left style=\"thin\"><color rgb=\"FF999999\"/></left><right style=\"thin\"><color rgb=\"FF999999\"/></right>"
+        "<top style=\"thin\"><color rgb=\"FF999999\"/></top><bottom style=\"thin\"><color rgb=\"FF999999\"/></bottom><diagonal/></border></borders>"
         "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
-        "<cellXfs count=\"6\">"
+        /* Na ordem do enum ESTILO_*: texto, grade 0/1, vetor 0/1, titulo, 5 faixas de probabilidade. */
+        "<cellXfs count=\"11\">"
         "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>"
         "<xf numFmtId=\"164\" fontId=\"0\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\"/></xf>"
-        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"3\" borderId=\"0\" xfId=\"0\" applyFill=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\"/></xf>"
-        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\"><alignment horizontal=\"center\"/></xf>"
-        "<xf numFmtId=\"2\" fontId=\"1\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyBorder=\"1\"/>"
+        "<xf numFmtId=\"164\" fontId=\"3\" fillId=\"3\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\"/></xf>"
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\"/></xf>"
+        "<xf numFmtId=\"0\" fontId=\"3\" fillId=\"3\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\"/></xf>"
         "<xf numFmtId=\"0\" fontId=\"2\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\"/>"
-        "</cellXfs><cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>"
+        "<xf numFmtId=\"2\" fontId=\"1\" fillId=\"4\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\"/>"
+        "<xf numFmtId=\"2\" fontId=\"1\" fillId=\"5\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\"/>"
+        "<xf numFmtId=\"2\" fontId=\"1\" fillId=\"6\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\"/>"
+        "<xf numFmtId=\"2\" fontId=\"4\" fillId=\"7\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\"/>"
+        "<xf numFmtId=\"2\" fontId=\"4\" fillId=\"8\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\"/>"
+        "</cellXfs>"
+        "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>"
         "<dxfs count=\"3\">"
-        "<dxf><font><b/><color rgb=\"FFFFFFFF\"/></font><fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF1D4ED8\"/><bgColor indexed=\"64\"/></patternFill></fill></dxf>"
-        "<dxf><font><color rgb=\"FF172033\"/></font><fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFFFFFFF\"/><bgColor indexed=\"64\"/></patternFill></fill></dxf>"
+        /* Em dxf (formatacao condicional) a cor do preenchimento solido vai em bgColor. */
+        "<dxf><font><b/><color rgb=\"FFFFFFFF\"/></font><fill><patternFill patternType=\"solid\"><bgColor rgb=\"FF1D4ED8\"/></patternFill></fill></dxf>"
+        "<dxf><font><color rgb=\"FF172033\"/></font><fill><patternFill patternType=\"solid\"><bgColor rgb=\"FFFFFFFF\"/></patternFill></fill></dxf>"
         "<dxf><font><color rgb=\"FFFFFFFF\"/></font></dxf>"
         "</dxfs></styleSheet>", XML_NS);
     zip_adicionar(&z, "xl/styles.xml", &t);
